@@ -78,6 +78,31 @@ for (const phase of ["initialize", "textDocument/diagnostic"] as const) {
 	});
 }
 
+test("failed pooled work preserves its error if cleanup also fails", async () => {
+	const f = fixture();
+	const pool = new LspClientPool();
+	const shutdown = LspClient.prototype.shutdown;
+	const spy = vi.spyOn(LspClient.prototype, "shutdown").mockImplementation(async function (
+		this: LspClient,
+	) {
+		await shutdown.call(this);
+		throw new Error("cleanup failure");
+	});
+	try {
+		await assert.rejects(
+			pool.run(f.adapter, f.root, 1000, undefined, async () => {
+				throw new Error("original failure");
+			}),
+			/original failure/,
+		);
+		f.exited();
+	} finally {
+		spy.mockRestore();
+		await pool.close();
+		await f.dispose();
+	}
+});
+
 test("shutdown bounds an unresponsive server independently of diagnostic timeout", async () => {
 	const f = fixture("lifecycle-ignore-shutdown");
 	const client = new LspClient(f.adapter, f.adapter.defaultCommand, f.root, 20_000);

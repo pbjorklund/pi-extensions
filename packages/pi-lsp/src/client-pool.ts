@@ -75,7 +75,11 @@ export class LspClientPool {
 			} catch (error) {
 				owned.client = undefined;
 				client.close();
-				await client.shutdown();
+				try {
+					await client.shutdown();
+				} catch {
+					// Keep the operation failure primary, as in the one-shot runner.
+				}
 				throw error;
 			} finally {
 				owned.active = false;
