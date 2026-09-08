@@ -172,8 +172,10 @@ Each server entry supports:
 
 Global options:
 
-- `timeout`: request timeout in milliseconds.
-  Defaults to `20000`.
+- `timeout`: per-request timeout in milliseconds, also used to bound each shared-client queue wait.
+  Defaults to `20000`. This is not a total deadline for a multi-file tool call; process shutdown uses separate bounded grace periods.
+
+Servers persist across calls within one Pi session and workspace. No keep-alive setting is required. See [server reuse and cleanup](../README.md#-server-reuse) for document refresh, configuration replacement, and cancellation behavior.
 
 pi-lsp infers `languageId` from common extensions and falls back to the extension without the leading dot.
 

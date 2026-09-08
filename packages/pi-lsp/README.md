@@ -11,7 +11,7 @@ Configure language servers by command and file extension instead of relying on h
 - Runs multiple servers for the same file type when complementary diagnostics are useful.
 - Exposes `lsp_diagnostics` for exact ranges and `lsp_fix` for supported source actions.
 - Supports workspace roots, bounded discovery, per-call server overrides, and preview-or-write edits.
-- Starts servers only for tool calls, shuts them down afterward, and shows activity only while they run.
+- Starts servers on first use and reuses them across tool calls within the same Pi session.
 
 ## 📦 Install
 
@@ -127,12 +127,20 @@ Parameters:
   Defaults to false.
 - `server?`: optional configured server name.
 
+## 🔄 Server reuse
+
+Server reuse is enabled by default, with no new setting. Each Pi session owns its clients, keyed by canonical workspace root and effective server command, arguments, environment, initialization options, and diagnostic timing settings. Calls sharing a client run in order; different roots and Pi sessions have separate processes. Symlink aliases of one root share a client.
+
+Each call reads the requested files from disk and opens fresh document versions, then closes those documents. Only requested files contribute diagnostics. Closed-document publications and older document versions are ignored; cached diagnostic results are not reused. Servers without versioned publications must honor LSP document close/open ordering.
+
+Settings are read on each tool call. A changed effective server definition shuts down its previous client before starting its replacement on next use. Failed initialization, protocol errors, request timeouts, and active cancellation discard the affected client, so a later call can retry. A server that exits while idle is restarted on next use.
+
 ## 🛑 Cancellation and shutdown
 
-Cancellation stops the current server and prevents further diagnostics routes or fix writes once observed.
+Cancellation stops the current server and prevents further diagnostics routes or fix writes once observed. Cancelling a queued call does not interrupt the active caller; queue waits use the configured timeout.
 Session shutdown, replacement, and reload cancel and await all LSP calls owned by that session before teardown completes, including partially initialized servers.
 Other sessions retain their own calls, even when they share a headless UI.
-A completed write is not rolled back if cancellation arrives during subsequent server shutdown.
+Idle clients receive LSP shutdown and exit requests. Cleanup allows 500 ms for the shutdown response, 500 ms for normal exit, and 500 ms after SIGTERM before falling back to SIGKILL; it awaits process exit. A completed write is not rolled back by later cancellation.
 
 Status cleanup is best effort and cannot bypass process cleanup or replace an operation's result or error.
 A server-cleanup failure is reported when there is no earlier operation failure.
@@ -153,7 +161,8 @@ A server process inherits Pi's environment and receives any `servers[].env` over
 ## 🚧 Limitations
 
 - Diagnostics are not injected continuously; the agent must call `lsp_diagnostics`.
-- Language servers start and stop for each tool call, so pi-lsp does not keep an editor-like incremental session.
+- Idle servers retain memory and may keep their own workspace watchers until session shutdown or reload. There is no cross-process server broker or idle eviction.
+- Documents are refreshed per call rather than kept open as an editor buffer.
 - The tools provide diagnostics and source code actions, not symbol navigation, references, or semantic rename.
 - A clean LSP result does not replace the repository's formatter, linter, type checker, build, or tests.
 - This project has not demonstrated through benchmarks that LSP improves agent task success, latency, or tool use.
