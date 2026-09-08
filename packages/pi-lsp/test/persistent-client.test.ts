@@ -78,6 +78,58 @@ for (const phase of ["initialize", "textDocument/diagnostic"] as const) {
 	});
 }
 
+test("active abort evicts the client and the same configuration can retry", async () => {
+	const f = fixture("lifecycle-hang-initialize");
+	const pool = new LspClientPool();
+	const controller = new AbortController();
+	const call = (signal?: AbortSignal) => pool.run(f.adapter, f.root, 300, signal, async () => {});
+	try {
+		const first = call(controller.signal);
+		const rejected = assert.rejects(first, /cancelled|aborted/);
+		await f.ready("initialize");
+		controller.abort();
+		await rejected;
+		f.exited();
+		await assert.rejects(call(), /timed out/);
+		assert.equal(f.events().filter((e) => e.method === "initialize").length, 2);
+		f.exited();
+	} finally {
+		await pool.close();
+		await f.dispose();
+	}
+});
+
+test("concurrent calls sharing one client execute in order", async () => {
+	const f = fixture();
+	const pool = new LspClientPool();
+	const ready = deferred();
+	const gate = deferred();
+	const order: string[] = [];
+	const first = pool.run(f.adapter, f.root, 1000, undefined, async () => {
+		order.push("first start");
+		ready.resolve();
+		await gate.promise;
+		order.push("first end");
+	});
+	try {
+		await ready.promise;
+		const second = pool.run(f.adapter, f.root, 1000, undefined, async () => {
+			order.push("second");
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(order, ["first start"]);
+		gate.resolve();
+		await Promise.all([first, second]);
+		assert.deepEqual(order, ["first start", "first end", "second"]);
+		assert.equal(f.events().filter((e) => e.method === "initialize").length, 1);
+	} finally {
+		gate.resolve();
+		await first;
+		await pool.close();
+		await f.dispose();
+	}
+});
+
 test("failed pooled work preserves its error if cleanup also fails", async () => {
 	const f = fixture();
 	const pool = new LspClientPool();
