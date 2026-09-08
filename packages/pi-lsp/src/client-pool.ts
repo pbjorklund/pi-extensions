@@ -28,7 +28,9 @@ export class LspClientPool {
 			this.#slots.set(key, slot);
 		}
 		const owned = slot;
-		const task = owned.tail.then(async () => {
+		const predecessor = owned.tail;
+		const task = (async () => {
+			await waitForTurn(predecessor, timeoutMs, signal);
 			this.#assertOpen(signal);
 			const fingerprint = JSON.stringify(
 				stable({
@@ -77,11 +79,8 @@ export class LspClientPool {
 			} finally {
 				signal?.removeEventListener("abort", abort);
 			}
-		});
-		owned.tail = task.then(
-			() => {},
-			() => {},
-		);
+		})();
+		owned.tail = Promise.allSettled([predecessor, task]).then(() => {});
 		return task;
 	}
 
@@ -105,6 +104,22 @@ export class LspClientPool {
 		if (this.#closing) throw new Error("LSP session is closing; request aborted.");
 		signal?.throwIfAborted();
 	}
+}
+
+function waitForTurn(previous: Promise<void>, timeoutMs: number, signal?: AbortSignal) {
+	return new Promise<void>((resolve, reject) => {
+		const finish = (error?: unknown) => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", abort);
+			if (error) reject(error);
+			else resolve();
+		};
+		const abort = () => finish(signal?.reason ?? new Error("LSP queued request aborted."));
+		const timer = setTimeout(() => finish(new Error("LSP queued request timed out.")), timeoutMs);
+		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) abort();
+		void previous.then(() => finish());
+	});
 }
 
 function stable(value: unknown): unknown {

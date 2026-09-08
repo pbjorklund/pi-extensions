@@ -2,7 +2,33 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { test } from "vitest";
 import { LspClientPool, sessionClientPool } from "../src/client-pool.js";
-import { fixture } from "./lifecycle-support.js";
+import { deferred, fixture } from "./lifecycle-support.js";
+
+test("a queued caller can cancel without interrupting the active client", async () => {
+	const f = fixture();
+	const pool = new LspClientPool();
+	const gate = deferred();
+	const ready = deferred();
+	const controller = new AbortController();
+	const first = pool.run(f.adapter, f.root, 1000, undefined, async () => {
+		ready.resolve();
+		await gate.promise;
+	});
+	try {
+		await ready.promise;
+		const second = pool.run(f.adapter, f.root, 1000, controller.signal, async () => {
+			assert.fail("cancelled queued operation ran");
+		});
+		controller.abort(new Error("queued abort"));
+		await assert.rejects(second, /queued abort/);
+		assert.ok(!f.events().some((e) => e.method === "exited"));
+	} finally {
+		gate.resolve();
+		await first;
+		await pool.close();
+		await f.dispose();
+	}
+});
 
 for (const scenario of ["lifecycle-persistent-push", "lifecycle-persistent-pull"]) {
 	test(`${scenario}: bad to fixed refresh uses current document and rejects old versions`, async () => {
