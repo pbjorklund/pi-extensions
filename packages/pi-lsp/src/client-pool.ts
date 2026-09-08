@@ -5,7 +5,7 @@ import type { LspServerAdapter } from "./types.js";
 
 export const sessionClientPool = Symbol("lsp-session-client-pool");
 
-type Slot = { tail: Promise<void>; client?: LspClient; fingerprint?: string };
+type Slot = { tail: Promise<void>; client?: LspClient; fingerprint?: string; active?: boolean };
 
 /** In-process resources owned by one Pi session, never shared through the UI. */
 export class LspClientPool {
@@ -49,7 +49,7 @@ export class LspClientPool {
 					pullDiagnosticsGraceMs: adapter.pullDiagnosticsGraceMs,
 				}),
 			);
-			if (owned.client && owned.fingerprint !== fingerprint) {
+			if (owned.client && (owned.fingerprint !== fingerprint || !owned.client.running)) {
 				await owned.client.shutdown();
 				owned.client = undefined;
 				this.#assertOpen(signal);
@@ -57,6 +57,7 @@ export class LspClientPool {
 			const fresh = !owned.client;
 			const client = owned.client ?? new LspClient(adapter, adapter.defaultCommand, cwd, timeoutMs);
 			owned.client = client;
+			owned.active = true;
 			owned.fingerprint = fingerprint;
 			const abort = () => client.close();
 			signal?.addEventListener("abort", abort, { once: true });
@@ -77,6 +78,7 @@ export class LspClientPool {
 				await client.shutdown();
 				throw error;
 			} finally {
+				owned.active = false;
 				signal?.removeEventListener("abort", abort);
 			}
 		})();
@@ -89,7 +91,7 @@ export class LspClientPool {
 			this.#closing = Promise.resolve().then(async () => {
 				await Promise.all(
 					[...this.#slots.values()].map(async (slot) => {
-						slot.client?.close();
+						if (slot.active) slot.client?.close();
 						await slot.tail;
 						await slot.client?.shutdown();
 					}),

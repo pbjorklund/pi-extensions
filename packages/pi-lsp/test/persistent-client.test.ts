@@ -1,8 +1,73 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { LspClientPool, sessionClientPool } from "../src/client-pool.js";
+import { LspClient } from "../src/lsp-client.js";
 import { deferred, fixture } from "./lifecycle-support.js";
+
+test("shutdown bounds an unresponsive server independently of diagnostic timeout", async () => {
+	const f = fixture("lifecycle-ignore-shutdown");
+	const client = new LspClient(f.adapter, f.adapter.defaultCommand, f.root, 20_000);
+	let closing: Promise<void> | undefined;
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		await client.start();
+		await client.initialize(f.root);
+		await f.ready("initialized");
+		closing = client.shutdown();
+		await Promise.race([
+			closing,
+			new Promise<never>((_resolve, reject) => {
+				timer = setTimeout(() => reject(new Error("cleanup exceeded its bound")), 1800);
+			}),
+		]);
+		for (const pid of new Set(f.events().map((e) => e.pid)))
+			assert.throws(() => process.kill(pid, 0), /ESRCH/);
+	} finally {
+		clearTimeout(timer);
+		client.close();
+		await closing;
+		await client.shutdown();
+		await f.dispose();
+	}
+});
+
+test("an idle server exit is replaced on the next request", async () => {
+	const f = fixture();
+	const pool = new LspClientPool();
+	const context = { ...f.ctx, [sessionClientPool]: pool };
+	try {
+		await f.run("diagnostics", { context });
+		const client = await pool.run(f.adapter, f.root, 1000, undefined, async (value) => value);
+		process.kill(f.events()[0].pid, "SIGTERM");
+		await vi.waitFor(() => assert.equal(client.running, false));
+		await f.run("diagnostics", { context });
+		assert.equal(f.events().filter((e) => e.method === "initialize").length, 2);
+	} finally {
+		await pool.close();
+		await f.dispose();
+	}
+});
+
+test("idle pool shutdown sends shutdown and exit and is idempotent", async () => {
+	const f = fixture();
+	const pool = new LspClientPool();
+	try {
+		await pool.run(f.adapter, f.root, 1000, undefined, async () => {});
+		await Promise.all([pool.close(), pool.close()]);
+		assert.deepEqual(
+			f
+				.events()
+				.slice(-3)
+				.map((e) => e.method),
+			["shutdown", "exit", "exited"],
+		);
+		f.exited();
+	} finally {
+		await pool.close();
+		await f.dispose();
+	}
+});
 
 test("a queued caller can cancel without interrupting the active client", async () => {
 	const f = fixture();

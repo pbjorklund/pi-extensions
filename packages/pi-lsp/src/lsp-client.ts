@@ -47,6 +47,7 @@ export class LspClient {
 	#child?: ChildProcessWithoutNullStreams;
 	#process?: ChildProcessWithoutNullStreams;
 	#processExit?: Promise<void>;
+	#shutdownPromise?: Promise<void>;
 	#buffer = Buffer.alloc(0);
 	#nextId = 1;
 	#pending = new Map<
@@ -276,14 +277,23 @@ export class LspClient {
 		return resolvedActions;
 	}
 
-	async shutdown() {
+	get running() {
+		return this.#child !== undefined;
+	}
+
+	shutdown(): Promise<void> {
+		this.#shutdownPromise ??= this.#shutdown();
+		return this.#shutdownPromise;
+	}
+
+	async #shutdown() {
 		const child = this.#process;
 		const processExit = this.#processExit;
 		if (!child || !processExit) return;
 
 		if (this.#child === child) {
 			try {
-				await this.request("shutdown", null);
+				await this.request("shutdown", null, PROCESS_EXIT_GRACE_MS);
 				this.notify("exit", undefined);
 				if (await settlesWithin(processExit, PROCESS_EXIT_GRACE_MS)) return;
 			} catch {
@@ -324,7 +334,7 @@ export class LspClient {
 		this.#child = undefined;
 	}
 
-	private request(method: string, params: unknown) {
+	private request(method: string, params: unknown, timeoutMs = this.#timeoutMs) {
 		const id = this.#nextId++;
 
 		return new Promise<JsonRpcMessage>((resolve, reject) => {
@@ -335,7 +345,7 @@ export class LspClient {
 						`${this.#adapter.name} LSP request timed out: ${method}.${this.#formatStderr()}`,
 					),
 				);
-			}, this.#timeoutMs);
+			}, timeoutMs);
 			this.#pending.set(id, { resolve, reject, timeout });
 
 			try {

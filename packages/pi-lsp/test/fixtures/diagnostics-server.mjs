@@ -18,7 +18,9 @@ function record(event) {
 	}
 }
 if (lifecycle) {
-	process.on("SIGTERM", () => setTimeout(() => process.exit(0), 25));
+	process.on("SIGTERM", () => {
+		if (scenario !== "lifecycle-ignore-shutdown") setTimeout(() => process.exit(0), 25);
+	});
 	process.on("exit", () => record({ method: "exited" }));
 	record({ method: "ready" });
 }
@@ -124,6 +126,7 @@ function handle(message) {
 		}
 	}
 	if (lifecycle) {
+		if (scenario === "lifecycle-ignore-shutdown" && message.method === "shutdown") return;
 		if (scenario === `lifecycle-hang-${message.method}`) return;
 		if (scenario === `lifecycle-error-${message.method}`) {
 			send({
