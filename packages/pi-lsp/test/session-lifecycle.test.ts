@@ -79,12 +79,32 @@ async function harness(scenario = "lifecycle-normal") {
 		},
 		staleAccesses: () => staleAccesses,
 		async dispose() {
+			await emit("session_shutdown");
 			await f.dispose();
 			vi.restoreAllMocks();
 			vi.unstubAllEnvs();
 		},
 	};
 }
+
+test("one session reuses its server across diagnostics and fixes until shutdown", async () => {
+	const h = await harness();
+	try {
+		await h.emit("session_start", "startup");
+		assert.equal(h.events().length, 0);
+		await h.execute("diagnostics");
+		await h.execute("fix");
+		await h.execute("diagnostics");
+		assert.equal(h.events().filter((event) => event.method === "initialize").length, 1);
+		assert.equal(new Set(h.events().map((event) => event.pid)).size, 1);
+		assert.ok(!h.events().some((event) => event.method === "exited"));
+		await h.emit("session_shutdown");
+		h.exited();
+	} finally {
+		await h.emit("session_shutdown");
+		await h.dispose();
+	}
+});
 
 for (const kind of ["diagnostics", "fix"] as const) {
 	for (const method of [
@@ -139,7 +159,10 @@ test("shutdown waits for every sibling, even after one operation fails; restart 
 	try {
 		const first = h.execute("diagnostics");
 		await ready[0].promise;
-		const second = h.execute("diagnostics");
+		const otherRoot = path.join(h.root, "other");
+		mkdirSync(otherRoot);
+		writeFileSync(path.join(otherRoot, "main.go"), "package main\n");
+		const second = h.execute("diagnostics", h.ctx, { root: otherRoot });
 		await ready[1].promise;
 		let settled = false;
 		const closing = h.emit("session_shutdown").then(() => {
@@ -154,6 +177,7 @@ test("shutdown waits for every sibling, even after one operation fails; restart 
 		await assert.rejects(second, /aborted|cancelled/);
 		await Promise.all([closing, restarting]);
 		await h.execute("diagnostics");
+		await h.emit("session_shutdown");
 		h.exited();
 	} finally {
 		for (const gate of gates) gate.resolve();
@@ -188,6 +212,7 @@ test("session managers sharing one headless UI have independent cancellation sco
 		await assert.rejects(first, /aborted|cancelled/);
 		await second;
 		await shutdown;
+		await h.emit("session_shutdown", "quit", otherCtx);
 		h.exited();
 	} finally {
 		gate.resolve();
@@ -203,11 +228,15 @@ test("shutdown after first route response prevents a later diagnostics route fro
 	writeFileSync(path.join(agentDir, "pi-lsp.json"), JSON.stringify(config));
 	const ready = deferred();
 	const gate = deferred();
-	const shutdown = h.Client.prototype.shutdown;
-	vi.spyOn(h.Client.prototype, "shutdown").mockImplementation(async function (this: LspClient) {
-		await shutdown.call(this);
+	const diagnostics = h.Client.prototype.diagnostics;
+	vi.spyOn(h.Client.prototype, "diagnostics").mockImplementation(async function (
+		this: LspClient,
+		uri,
+	) {
+		const result = await diagnostics.call(this, uri);
 		ready.resolve();
 		await gate.promise;
+		return result;
 	});
 	try {
 		const task = h.execute("diagnostics");

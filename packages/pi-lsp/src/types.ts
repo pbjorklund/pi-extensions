@@ -1,9 +1,12 @@
+import type { LspClientPool, sessionClientPool } from "./client-pool.js";
+
 export interface ServerCommand {
 	command: string;
 	args: string[];
 }
 
 export interface StatusContext {
+	[sessionClientPool]?: LspClientPool;
 	ui: { setStatus: (key: string, value: string | undefined) => void };
 }
 

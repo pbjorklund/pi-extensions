@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { sessionClientPool } from "./client-pool.js";
 import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.js";
 import { LspClient } from "./lsp-client.js";
 import { applyTextEdits, collectWorkspaceEdits, hasOverlappingTextEdits } from "./text-edits.js";
@@ -150,6 +151,15 @@ async function withLspClient<T>(
 	operation: (client: LspClient) => Promise<T>,
 ): Promise<T> {
 	throwIfAborted(signal, adapter);
+	const pool = ctx[sessionClientPool];
+	if (pool) {
+		try {
+			ctx.ui.setStatus(statusKey, `${adapter.name} ${activity}`);
+			return await pool.run(adapter, root, timeoutMs, signal, operation);
+		} finally {
+			clearStatus(ctx, statusKey);
+		}
+	}
 	const client = new LspClient(adapter, adapter.defaultCommand, root, timeoutMs);
 	const abort = () => client.close();
 	signal?.addEventListener("abort", abort, { once: true });
