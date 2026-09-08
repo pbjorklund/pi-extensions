@@ -57,6 +57,8 @@ export class LspClient {
 			timeout: NodeJS.Timeout;
 		}
 	>();
+	#documentVersions = new Map<string, number>();
+	#openDocuments = new Set<string>();
 	#publishedDiagnostics = new Map<string, { version: number; diagnostics: LspDiagnostic[] }>();
 	#diagnosticWaiters = new Map<
 		string,
@@ -159,7 +161,7 @@ export class LspClient {
 			initializationOptions: this.#adapter.initialization ?? {},
 			capabilities: {
 				textDocument: {
-					// This spawn-per-call client can't track dynamic registrations, so
+					// This client doesn't track dynamic registrations, so
 					// capabilities must be advertised statically.
 					codeAction: {
 						dynamicRegistration: false,
@@ -186,12 +188,20 @@ export class LspClient {
 	}
 
 	didOpen(uri: string, text: string, languageId: string) {
+		const key = documentKey(uri);
+		const version = (this.#documentVersions.get(key) ?? 0) + 1;
+		this.#documentVersions.set(key, version);
+		this.#openDocuments.add(key);
+		this.#publishedDiagnostics.delete(key);
 		this.notify("textDocument/didOpen", {
-			textDocument: { uri, languageId, version: 1, text },
+			textDocument: { uri, languageId, version, text },
 		});
 	}
 
 	didClose(uri: string) {
+		const key = documentKey(uri);
+		this.#openDocuments.delete(key);
+		this.#publishedDiagnostics.delete(key);
 		if (!this.#child) return false;
 		this.notify("textDocument/didClose", {
 			textDocument: { uri },
@@ -222,7 +232,10 @@ export class LspClient {
 			textDocument: { uri },
 		});
 		const result = response.result as { items?: LspDiagnostic[] } | undefined;
-		const diagnostics = result?.items ?? [];
+		if (!Array.isArray(result?.items)) {
+			throw new Error(`${this.#adapter.name} LSP did not return a full diagnostic report.`);
+		}
+		const diagnostics = result.items;
 		if (diagnostics.length > 0 || !this.#adapter.pullDiagnosticsGraceMs) return diagnostics;
 		return this.#waitForPublishedDiagnostics(uri, {
 			afterVersion,
@@ -393,9 +406,14 @@ export class LspClient {
 		}
 
 		if (message.method === "textDocument/publishDiagnostics") {
-			const params = message.params as { uri?: string; diagnostics?: LspDiagnostic[] } | undefined;
+			const params = message.params as
+				| { uri?: string; version?: number; diagnostics?: LspDiagnostic[] }
+				| undefined;
 			if (params?.uri) {
 				const key = documentKey(params.uri);
+				if (!this.#openDocuments.has(key)) return;
+				if (params.version !== undefined && params.version !== this.#documentVersions.get(key))
+					return;
 				const previousVersion = this.#publishedDiagnostics.get(key)?.version ?? 0;
 				const publication = {
 					version: previousVersion + 1,

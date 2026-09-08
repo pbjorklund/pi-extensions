@@ -4,6 +4,7 @@ const scenario = process.argv[2];
 const expectedFiles = Number(process.argv[3] ?? "0");
 let buffer = Buffer.alloc(0);
 const openedUris = [];
+const documents = new Map();
 
 if (scenario === "delayed-sigterm") process.on("SIGTERM", exitAfterDelay);
 
@@ -74,6 +75,54 @@ function publish(uri, diagnostics) {
 
 function handle(message) {
 	record(message);
+	if (scenario.startsWith("lifecycle-persistent-")) {
+		if (message.method === "initialize") {
+			send({
+				jsonrpc: "2.0",
+				id: message.id,
+				result: { capabilities: scenario.endsWith("pull") ? { diagnosticProvider: {} } : {} },
+			});
+			return;
+		}
+		if (message.method === "textDocument/didOpen") {
+			const doc = message.params.textDocument;
+			documents.set(doc.uri, doc);
+			if (doc.text !== "silent\n") {
+				send({
+					jsonrpc: "2.0",
+					method: "textDocument/publishDiagnostics",
+					params: {
+						uri: doc.uri,
+						version: doc.version,
+						diagnostics: doc.text === "bad\n" ? [diagnostic("current error")] : [],
+					},
+				});
+				if (doc.version > 1)
+					send({
+						jsonrpc: "2.0",
+						method: "textDocument/publishDiagnostics",
+						params: {
+							uri: doc.uri,
+							version: doc.version - 1,
+							diagnostics: [diagnostic("stale error")],
+						},
+					});
+			}
+			return;
+		}
+		if (message.method === "textDocument/diagnostic") {
+			const doc = documents.get(message.params.textDocument.uri);
+			send({
+				jsonrpc: "2.0",
+				id: message.id,
+				result:
+					doc.text === "silent\n"
+						? { kind: "unchanged", resultId: "stale" }
+						: { kind: "full", items: doc.text === "bad\n" ? [diagnostic("current error")] : [] },
+			});
+			return;
+		}
+	}
 	if (lifecycle) {
 		if (scenario === `lifecycle-hang-${message.method}`) return;
 		if (scenario === `lifecycle-error-${message.method}`) {
