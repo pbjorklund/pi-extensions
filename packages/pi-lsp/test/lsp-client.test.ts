@@ -25,6 +25,24 @@ test("server environment overrides are forwarded to the LSP process", async () =
 	}
 });
 
+test("shutdown omits params from the parameterless request", async () => {
+	const root = mkdtempSync(path.join(os.tmpdir(), "pi-lsp-shutdown-no-params-"));
+	const marker = path.join(root, "shutdown-request.txt");
+	const adapter = fixtureAdapter("strict-shutdown-no-params", 30);
+	adapter.env = { PI_LSP_TEST_SHUTDOWN_MARKER: marker };
+	const client = new LspClient(adapter, adapter.defaultCommand, root, 1_000);
+
+	try {
+		await client.start();
+		await client.initialize(root);
+		await client.shutdown();
+		assert.equal(readFileSync(marker, "utf8"), "params-omitted\n");
+	} finally {
+		await client.shutdown();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("shutdown waits for the LSP process to exit", async () => {
 	const root = mkdtempSync(path.join(os.tmpdir(), "pi-lsp-shutdown-"));
 	const marker = path.join(root, "exited.txt");

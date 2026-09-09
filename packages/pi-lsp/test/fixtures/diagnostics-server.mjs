@@ -313,6 +313,12 @@ function handle(message) {
 	}
 
 	if (message.method === "shutdown") {
+		if (scenario === "strict-shutdown-no-params") {
+			writeFileSync(
+				process.env.PI_LSP_TEST_SHUTDOWN_MARKER,
+				Object.hasOwn(message, "params") ? "params-present\n" : "params-omitted\n",
+			);
+		}
 		send({ jsonrpc: "2.0", id: message.id, result: null });
 		return;
 	}

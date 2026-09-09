@@ -293,7 +293,7 @@ export class LspClient {
 
 		if (this.#child === child) {
 			try {
-				await this.request("shutdown", null, PROCESS_EXIT_GRACE_MS);
+				await this.request("shutdown", undefined, PROCESS_EXIT_GRACE_MS);
 				this.notify("exit", undefined);
 				if (await settlesWithin(processExit, PROCESS_EXIT_GRACE_MS)) return;
 			} catch {
